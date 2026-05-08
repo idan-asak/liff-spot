@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>朝活リスタート 設定</title>
+    <title>朝活リスタート</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -83,6 +83,47 @@
         .success-msg p { color: #333; font-size: 16px; line-height: 1.6; }
         .error-msg { text-align: center; padding: 40px 20px; }
         .error-msg p { color: #666; font-size: 14px; line-height: 1.6; }
+
+        /* ── お申し込み画面 ── */
+        .checkout-header {
+            text-align: center; margin-bottom: 20px;
+        }
+        .checkout-header .icon { font-size: 40px; margin-bottom: 8px; }
+        .checkout-header h2 {
+            font-size: 20px; color: #333; margin-bottom: 4px;
+        }
+        .checkout-header p {
+            font-size: 13px; color: #888;
+        }
+        .price-box {
+            text-align: center; padding: 20px;
+            background: #f0f9ff; border-radius: 12px; margin-bottom: 16px;
+        }
+        .price-box .price {
+            font-size: 32px; font-weight: 800; color: #0096C7;
+        }
+        .price-box .price-note {
+            font-size: 13px; color: #666; margin-top: 4px;
+        }
+        .price-box .discount-badge {
+            display: inline-block; background: #FF6B6B; color: white;
+            font-size: 12px; font-weight: 700; padding: 3px 10px;
+            border-radius: 20px; margin-bottom: 8px;
+        }
+        .price-box .original-price {
+            font-size: 16px; color: #999; text-decoration: line-through;
+            margin-right: 4px;
+        }
+        .feature-list {
+            list-style: none; margin-bottom: 20px;
+        }
+        .feature-list li {
+            font-size: 14px; color: #444; padding: 6px 0;
+            display: flex; align-items: center; gap: 8px;
+        }
+        .feature-list li::before {
+            content: "\2714"; color: #0096C7; font-weight: 700;
+        }
     </style>
 </head>
 <body>
@@ -93,7 +134,32 @@
             <p>読み込み中...</p>
         </div>
 
-        <!-- メインフォーム -->
+        <!-- お申し込み画面（未購入） -->
+        <div id="checkout" style="display:none;">
+            <div class="card">
+                <div class="checkout-header">
+                    <div class="icon">☀️</div>
+                    <h2>朝活リスタート</h2>
+                    <p>7日間のチャット朝活サポート</p>
+                </div>
+
+                <div class="price-box" id="priceBox">
+                    <!-- JSで初回/リピートに応じて書き換え -->
+                </div>
+
+                <ul class="feature-list">
+                    <li>毎朝LINEであなたをお待ちします</li>
+                    <li>起きたい時間に合わせた朝活サポート</li>
+                    <li>7日間で朝のリズムを立て直し</li>
+                </ul>
+
+                <button class="btn-submit" id="btnCheckout" onclick="goToCheckout()">
+                    お支払いに進む
+                </button>
+            </div>
+        </div>
+
+        <!-- メインフォーム（設定画面・購入済み） -->
         <div id="main" style="display:none;">
             <div class="card">
                 <div class="section-title">
@@ -164,6 +230,7 @@
         const API_BASE = "https://api.asa-plant.com";
 
         let lineUserId = null;
+        let checkoutUrl = null;
 
         // ── 初期化 ──
         async function init() {
@@ -178,32 +245,107 @@
                 const profile = await liff.getProfile();
                 lineUserId = profile.userId;
 
-                // 開始日のデフォルト（明日）
-                const tomorrow = new Date();
-                tomorrow.setDate(tomorrow.getDate() + 1);
-                const dateInput = document.getElementById("startDate");
-                dateInput.value = tomorrow.toISOString().split("T")[0];
-                dateInput.min = tomorrow.toISOString().split("T")[0];
-
-                // 時刻オプション（4:00〜9:00、15分刻み）
-                const timeSelect = document.getElementById("wakeTime");
-                for (let h = 4; h <= 9; h++) {
-                    for (let m = 0; m < 60; m += 15) {
-                        if (h === 9 && m > 0) break;
-                        const val = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-                        const opt = document.createElement("option");
-                        opt.value = val;
-                        opt.textContent = val;
-                        if (val === "06:00") opt.selected = true;
-                        timeSelect.appendChild(opt);
-                    }
+                // URLパラメータで mode=setup なら直接設定画面へ（購入完了後のリダイレクト）
+                const params = new URLSearchParams(location.search);
+                if (params.get("mode") === "setup") {
+                    showSetupForm();
+                    return;
                 }
 
-                document.getElementById("loading").style.display = "none";
-                document.getElementById("main").style.display = "block";
+                // 購入状態を確認してルーティング
+                await routeByPurchaseStatus();
             } catch (e) {
                 showError("初期化に失敗しました: " + e.message);
             }
+        }
+
+        // ── 購入状態に応じて画面を切り替え ──
+        async function routeByPurchaseStatus() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/spot/checkout`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ line_user_id: lineUserId }),
+                });
+
+                if (resp.status === 409) {
+                    // コミュニティ会員 → 購入不要
+                    const data = await resp.json();
+                    showError(data.detail || "コミュニティ会員の方はスポット購入は不要です。");
+                    return;
+                }
+
+                if (!resp.ok) {
+                    const data = await resp.json();
+                    showError(data.detail || "エラーが発生しました");
+                    return;
+                }
+
+                const data = await resp.json();
+                checkoutUrl = data.checkout_url;
+
+                // 価格表示を組み立て
+                const priceBox = document.getElementById("priceBox");
+                if (data.is_first) {
+                    priceBox.innerHTML =
+                        '<span class="discount-badge">初回 500円引き</span><br>' +
+                        '<span class="original-price">&yen;1,000</span>' +
+                        '<span class="price">&yen;500</span>' +
+                        '<div class="price-note">7日間 &middot; 税込</div>';
+                } else {
+                    priceBox.innerHTML =
+                        '<span class="price">&yen;1,000</span>' +
+                        '<div class="price-note">7日間 &middot; 税込</div>';
+                }
+
+                document.getElementById("loading").style.display = "none";
+                document.getElementById("checkout").style.display = "block";
+            } catch (e) {
+                showError("通信エラー: " + e.message);
+            }
+        }
+
+        // ── Stripe Checkoutへ遷移 ──
+        function goToCheckout() {
+            const btn = document.getElementById("btnCheckout");
+            btn.disabled = true;
+            btn.textContent = "移動中...";
+
+            if (checkoutUrl) {
+                // LIFF内ブラウザから外部URLへ遷移
+                if (liff.isInClient()) {
+                    liff.openWindow({ url: checkoutUrl, external: true });
+                } else {
+                    window.location.href = checkoutUrl;
+                }
+            }
+        }
+
+        // ── 設定フォームを表示 ──
+        function showSetupForm() {
+            // 開始日のデフォルト（明日）
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            const dateInput = document.getElementById("startDate");
+            dateInput.value = tomorrow.toISOString().split("T")[0];
+            dateInput.min = tomorrow.toISOString().split("T")[0];
+
+            // 時刻オプション（4:00〜9:00、15分刻み）
+            const timeSelect = document.getElementById("wakeTime");
+            for (let h = 4; h <= 9; h++) {
+                for (let m = 0; m < 60; m += 15) {
+                    if (h === 9 && m > 0) break;
+                    const val = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+                    const opt = document.createElement("option");
+                    opt.value = val;
+                    opt.textContent = val;
+                    if (val === "06:00") opt.selected = true;
+                    timeSelect.appendChild(opt);
+                }
+            }
+
+            document.getElementById("loading").style.display = "none";
+            document.getElementById("main").style.display = "block";
         }
 
         // ── チェックボックス切り替え ──
@@ -278,6 +420,7 @@
         function showError(msg) {
             document.getElementById("loading").style.display = "none";
             document.getElementById("main").style.display = "none";
+            document.getElementById("checkout").style.display = "none";
             document.getElementById("errorText").textContent = msg;
             document.getElementById("error").style.display = "block";
         }
